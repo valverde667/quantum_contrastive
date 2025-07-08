@@ -1,1 +1,3 @@
 /vsi*
+/data/*
+*__pycache*
