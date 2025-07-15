@@ -2,3 +2,4 @@
 /data/*
 *__pycache*
 *.vscode*
+src/quantum_contrastive/data/*
