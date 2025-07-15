@@ -1,3 +1,4 @@
 /vsi*
 /data/*
 *__pycache*
+*.vscode*
