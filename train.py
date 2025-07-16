@@ -3,14 +3,10 @@ import torch
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 from torchvision.datasets import STL10
+import matplotlib.pyplot as plt
 
 from quantum_contrastive.models.contrastive_model import ContrastiveModel
 from quantum_contrastive.losses.contrastive import InfoNCELoss
-
-import os
-from torch.utils.data import DataLoader
-from torchvision.datasets import STL10
-import torchvision.transforms as transforms
 
 
 def get_dataloaders(batch_size=128):
@@ -48,10 +44,11 @@ def get_dataloaders(batch_size=128):
     return train_loader
 
 
-def train_one_epoch(model, loader, optimizer, criterion, device):
+def train_one_epoch(model, dataloader, optimizer, criterion, device):
     model.train()
     total_loss = 0.0
-    for x, _ in loader:
+    losses = []
+    for x, _ in dataloader:
         x_i = x
         x_j = x.clone()
 
@@ -60,24 +57,42 @@ def train_one_epoch(model, loader, optimizer, criterion, device):
         _, z_j = model(x_j)
 
         loss = criterion(z_i, z_j)
-
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
+
         total_loss += loss.item()
-    return total_loss / len(loader)
+        losses.append(loss.item())
+
+    avg_loss = total_loss / len(dataloader)
+    print(f"Epoch Loss: {avg_loss:.4f}")
+
+    return avg_loss, losses
 
 
 def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     model = ContrastiveModel().to(device)
     criterion = InfoNCELoss(temperature=0.5)
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     loader = get_dataloaders()
 
+    all_epoch_losses = []
     for epoch in range(10):
-        loss = train_one_epoch(model, loader, optimizer, criterion, device)
-        print(f"Epoch {epoch+1}: Loss = {loss:.4f}")
+        avg_loss, batch_loss = train_one_epoch(
+            model, loader, optimizer, criterion, device
+        )
+        all_epoch_losses.append(avg_loss)
+
+    # Plot history of losses
+    plt.scatter([i for i in range(len(all_epoch_losses))], all_epoch_losses)
+    plt.title("Average Loss per Epoch")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.grid()
+    plt.tight_layout()
+    plt.savefig("loss_curve.png")
+    plt.show()
 
 
 if __name__ == "__main__":
