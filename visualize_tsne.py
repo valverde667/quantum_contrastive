@@ -24,23 +24,39 @@ def extract_features(encoder, dataloader, device):
     return torch.cat(features).numpy(), torch.cat(labels).numpy()
 
 
-def visualize_tsne(features, labels, save_path="tsne_plot.svg"):
+def visualize_tsne(features, labels, save_path="tsne_plot.pdf"):
     # Ensure features is 2D: [n_samples, n_features]
     features = features.reshape(features.shape[0], -1)
 
     tsne = TSNE(n_components=2, perplexity=30, max_iter=1000, random_state=42)
     tsne_results = tsne.fit_transform(features)
 
+    # List class labels for STL-10 dataset
+    class_labels = [
+        "airplane",
+        "bird",
+        "car",
+        "cat",
+        "deer",
+        "dog",
+        "horse",
+        "monkey",
+        "ship",
+        "truck",
+    ]
+    label_names = [class_labels[label] for label in labels]
+
     plt.figure(figsize=(10, 8))
     sns.scatterplot(
         x=tsne_results[:, 0],
         y=tsne_results[:, 1],
-        hue=labels,
+        hue=label_names,
         palette=sns.color_palette("hls", 10),
         legend="full",
         alpha=0.7,
     )
     plt.title("t-SNE of STL-10 Representations")
+    plt.tight_layout()
     plt.savefig(save_path)
     plt.show()
 
