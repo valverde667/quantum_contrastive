@@ -7,9 +7,19 @@ import matplotlib.pyplot as plt
 
 from quantum_contrastive.models.contrastive_model import ContrastiveModel
 from quantum_contrastive.losses.contrastive import InfoNCELoss
+from quantum_contrastive.eval.linear_probe import train_linear_probe
 
 
-def get_dataloaders(batch_size=128):
+# You’ll need this if you use contrastive views
+class ContrastiveTransform:
+    def __init__(self, base_transform):
+        self.base_transform = base_transform
+
+    def __call__(self, x):
+        return self.base_transform(x), self.base_transform(x)
+
+
+def get_dataloaders(batch_size=128, for_eval=False):
     # Base directory relative to this file
     try:
         base = os.path.dirname(__file__)
@@ -27,7 +37,8 @@ def get_dataloaders(batch_size=128):
     else:
         print(f"STL-10 dataset already exists at {data_root}. Skipping download.")
 
-    transform = transforms.Compose(
+    # Set transform
+    base_transform = transforms.Compose(
         [
             transforms.RandomResizedCrop(96),
             transforms.RandomHorizontalFlip(),
@@ -35,13 +46,28 @@ def get_dataloaders(batch_size=128):
         ]
     )
 
-    train_dataset = STL10(
-        root=data_root, split="train", download=False, transform=transform
-    )
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, num_workers=4
-    )
-    return train_loader
+    if for_eval:
+        eval_transform = transforms.Compose(
+            [
+                transforms.Resize(96),
+                transforms.CenterCrop(96),
+                transforms.ToTensor(),
+            ]
+        )
+        dataset = STL10(
+            root=data_root, split="train", download=False, transform=eval_transform
+        )
+    else:
+        contrastive_transform = ContrastiveTransform(base_transform)
+        dataset = STL10(
+            root=data_root,
+            split="train",
+            download=False,
+            transform=contrastive_transform,
+        )
+
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+    return dataloader
 
 
 def train_one_epoch(model, dataloader, optimizer, criterion, device):
@@ -49,10 +75,9 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device):
     total_loss = 0.0
     losses = []
     for x, _ in dataloader:
-        x_i = x
-        x_j = x.clone()
-
+        x_i, x_j = x
         x_i, x_j = x_i.to(device), x_j.to(device)
+
         _, z_i = model(x_i)
         _, z_j = model(x_j)
 
@@ -78,6 +103,7 @@ def main():
     loader = get_dataloaders()
 
     all_epoch_losses = []
+    print("---- Beginning contrastive training.")
     for epoch in range(10):
         avg_loss, batch_loss = train_one_epoch(
             model, loader, optimizer, criterion, device
@@ -93,6 +119,12 @@ def main():
     plt.tight_layout()
     plt.savefig("loss_curve.png")
     plt.show()
+
+    # Run linear evaluation
+    print("---- Beginning linear probe.")
+    encoder = model.encoder
+    eval_loader = get_dataloaders(for_eval=True)
+    train_linear_probe(encoder, eval_loader, num_classes=10, device=device)
 
 
 if __name__ == "__main__":
