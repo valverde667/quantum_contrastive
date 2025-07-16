@@ -4,3 +4,5 @@
 *.vscode*
 *.egg-info/
 src/quantum_contrastive/data/*
+diff.txt
+loss_curve.png
