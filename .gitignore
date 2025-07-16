@@ -6,3 +6,7 @@
 src/quantum_contrastive/data/*
 diff.txt
 loss_curve.png
+*.png
+*.DS_Store
+*.pdf
+*.pth
