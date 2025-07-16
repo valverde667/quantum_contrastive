@@ -114,6 +114,9 @@ def main():
         )
         all_epoch_losses.append(avg_loss)
 
+    # Save model
+    torch.save(model.state_dict(), "contrastive_model.pth")
+
     # Plot history of losses
     plt.scatter([i for i in range(len(all_epoch_losses))], all_epoch_losses)
     plt.title("Average Loss per Epoch")
