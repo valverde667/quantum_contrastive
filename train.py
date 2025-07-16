@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from quantum_contrastive.models.contrastive_model import ContrastiveModel
 from quantum_contrastive.losses.contrastive import InfoNCELoss
 from quantum_contrastive.eval.linear_probe import train_linear_probe
+from quantum_contrastive.eval.knn_eval import knn_evaluate
 
 
 # You’ll need this if you use contrastive views
@@ -55,7 +56,7 @@ def get_dataloaders(batch_size=128, for_eval=False):
             ]
         )
         dataset = STL10(
-            root=data_root, split="train", download=False, transform=eval_transform
+            root=data_root, split="test", download=False, transform=eval_transform
         )
     else:
         contrastive_transform = ContrastiveTransform(base_transform)
@@ -125,6 +126,11 @@ def main():
     encoder = model.encoder
     eval_loader = get_dataloaders(for_eval=True)
     train_linear_probe(encoder, eval_loader, num_classes=10, device=device)
+
+    # Run KNN evaluation
+    print("---- Beginning KNN evaluation.")
+    test_loader = get_dataloaders(for_eval=True)
+    knn_evaluate(encoder, eval_loader, test_loader, device=device, k=5)
 
 
 if __name__ == "__main__":
