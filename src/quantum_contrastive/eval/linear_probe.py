@@ -10,7 +10,7 @@ def train_linear_probe(encoder, dataloader, num_classes, device, epochs=10, lr=1
         param.requires_grad = False
 
     # Assume encoder returns flattened output (we can adapt if not)
-    dummy_input = next(iter(dataloader))[0][0].to(device)  # (x_i, x_j), label
+    dummy_input = next(iter(dataloader))[0][0].to(device)  # (x, label)
     with torch.no_grad():
         dummy_output = encoder(dummy_input.unsqueeze(0))
     feat_dim = dummy_output.shape[1]
@@ -26,10 +26,13 @@ def train_linear_probe(encoder, dataloader, num_classes, device, epochs=10, lr=1
         correct = 0
         total = 0
 
-        for (x_i, _), labels in tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
-            x_i, labels = x_i.to(device), labels.to(device)
+        for x, labels in tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
+            x, labels = x.to(device), labels.to(device)
             with torch.no_grad():
-                feats = encoder(x_i)
+                feats = encoder(x)
+                feats = feats.view(
+                    feats.size(0), -1
+                )  # Reshap from [B, 512, 1, 1] to [B, 512]
 
             logits = clf(feats)
             loss = criterion(logits, labels)
