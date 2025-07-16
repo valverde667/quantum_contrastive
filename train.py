@@ -9,6 +9,9 @@ from quantum_contrastive.models.contrastive_model import ContrastiveModel
 from quantum_contrastive.losses.contrastive import InfoNCELoss
 from quantum_contrastive.eval.linear_probe import train_linear_probe
 from quantum_contrastive.eval.knn_eval import knn_evaluate
+from quantum_contrastive.visual.plot_format import set_plot_style
+
+set_plot_style()
 
 
 # You’ll need this if you use contrastive views
@@ -116,9 +119,8 @@ def main():
     plt.title("Average Loss per Epoch")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
-    plt.grid()
     plt.tight_layout()
-    plt.savefig("loss_curve.png")
+    plt.savefig("loss_curve.svg")
     plt.show()
 
     # Run linear evaluation
