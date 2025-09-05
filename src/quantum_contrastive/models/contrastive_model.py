@@ -81,11 +81,30 @@ class QuantumVQCHead(nn.Module):
 
         outs = []
         for i in range(B):
-            xi = a_cpu[i]
-            zi = self.circuit(xi, w_cpu)  # list of n_qubits expvals (float32)
+            res = self.circuit(a_cpu[i], w_cpu)
+            # Convert list/tuple of scalars to a 1D torch tensor
+            if isinstance(res, (list, tuple)):
+                zi = torch.stack(
+                    [
+                        (
+                            v
+                            if isinstance(v, torch.Tensor)
+                            else torch.tensor(v, dtype=torch.float32)
+                        )
+                        for v in res
+                    ],
+                    dim=0,
+                )
+            else:
+                zi = (
+                    res
+                    if isinstance(res, torch.Tensor)
+                    else torch.tensor(res, dtype=torch.float32)
+                )
             outs.append(zi)
-        z_cpu = torch.stack(outs, dim=0)  # (B, n_qubits) on CPU
-        z = z_cpu.to(h.device, dtype=h.dtype)  # back to original device/dtype
+
+        z_cpu = torch.stack(outs, dim=0)  # (B, n_qubits)
+        z = z_cpu.to(h.device, dtype=h.dtype)
 
         return F.normalize(z, dim=-1)
 
@@ -98,7 +117,14 @@ class ContrastiveModel(nn.Module):
         self.encoder = nn.Sequential(*list(base_model.children())[:-1])  # remove FC
         self.encoder_out_dim = base_model.fc.in_features
 
-        self.projection_head = ProjectionHead(self.encoder_out_dim, projection_dim)
+        # self.projection_head = ProjectionHead(self.encoder_out_dim, projection_dim)
+
+        # projection_dim will equal the number of qubits / output dims of the quantum head
+        q_out = 8  # number of qubits to actually use (fast & feasible)
+        self.projection_head = nn.Sequential(
+            QuantumVQCHead(in_dim=self.encoder_out_dim, n_qubits=q_out, n_layers=1),
+            nn.Linear(q_out, projection_dim),  # lift to 128-D if your code expects it
+        )
 
     def forward(self, x):
         h = self.encoder(x)  # shape: (B, 512, 1, 1)
