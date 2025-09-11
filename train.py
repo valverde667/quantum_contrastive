@@ -144,7 +144,7 @@ def main():
     plt.ylabel("Loss")
     plt.tight_layout()
     plt.savefig("loss_curve.svg")
-    # plt.show()
+    plt.show()
 
     # Run linear evaluation
     print("---- Beginning linear probe.")
