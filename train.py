@@ -4,6 +4,8 @@ from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 from torchvision.datasets import STL10
 import matplotlib.pyplot as plt
+import random
+import numpy as np
 
 from quantum_contrastive.models.contrastive_model import ContrastiveModel
 from quantum_contrastive.losses.contrastive import InfoNCELoss
@@ -12,6 +14,24 @@ from quantum_contrastive.eval.knn_eval import knn_evaluate
 from quantum_contrastive.visual.plot_format import set_plot_style
 
 set_plot_style()
+
+
+# Set random seed
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    # Make CuDNN deterministic (slower, but reproducible)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+    # For dataloaders with multiple workers
+    os.environ["PYTHONHASHSEED"] = str(seed)
+
+
+set_seed(42)
 
 
 # You’ll need this if you use contrastive views
@@ -124,7 +144,7 @@ def main():
     plt.ylabel("Loss")
     plt.tight_layout()
     plt.savefig("loss_curve.svg")
-    plt.show()
+    # plt.show()
 
     # Run linear evaluation
     print("---- Beginning linear probe.")
