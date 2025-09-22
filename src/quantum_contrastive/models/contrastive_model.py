@@ -63,12 +63,10 @@ class QuantumVQCHead(nn.Module):
 
         self.circuit = circuit
 
-    @torch.no_grad()
     def _scale_to_angles(self, a: torch.Tensor) -> torch.Tensor:
-        # keep angles reasonable and finite
-        a = torch.tanh(a) * 1.57079632679  # ~[-pi/2, pi/2]
-        a = torch.nan_to_num(a, nan=0.0, posinf=3.14159265, neginf=-3.14159265)
-        return a.clamp(-3.14159265, 3.14159265)
+        # keep values finite and stable for training
+        a = torch.tanh(a) * (torch.pi / 2)  # scale to [-π/2, π/2]
+        return torch.clamp(a, -torch.pi, torch.pi)  # optional extra safety clamp
 
     def forward(self, h: torch.Tensor) -> torch.Tensor:
         B = h.shape[0]
