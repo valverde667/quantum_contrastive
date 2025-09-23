@@ -15,6 +15,7 @@ from quantum_contrastive.losses.contrastive import InfoNCELoss
 from quantum_contrastive.eval.linear_probe import train_linear_probe
 from quantum_contrastive.eval.knn_eval import knn_evaluate
 from quantum_contrastive.visual.plot_format import set_plot_style
+import utility
 
 set_plot_style()
 
@@ -280,7 +281,10 @@ def train_one_epoch_qfm(
     losses = []
 
     epoch_t0 = time.perf_counter()
-    batch_ms_list = []
+    batch_s_list = []
+
+    # Initialize metrics
+    tau_used, sigma2_used, off_mu, off_sd, delta = None, None, None, None, None
 
     for x, _ in dataloader:
         t0 = time.perf_counter()
@@ -293,10 +297,16 @@ def train_one_epoch_qfm(
         h = torch.cat([h_i, h_j], dim=0)  # [2B, D]
 
         # 2) Compute pairwise fidelities with the QFM
-        S = model.qfm.compute_fidelity_matrix(h)  # [2B, 2B], in [0,1]
+        S = model.qfm.compute_fidelity_matrix(h).clamp(0.0, 1.0)  # [2B, 2B], in [0,1]
 
         # 3) Choose loss
         if loss_type == "infonce":
+            tau_used = tau
+
+            # Diagnostics
+            off_mu, off_sd = utility.offdiag_stats(S.detach())
+            delta = utility.pos_neg_gap_from_full(S.detach())
+
             # Standard NT-Xent on similarities
             N = S.size(0)  # 2B
             S = S.masked_fill(torch.eye(N, device=S.device, dtype=torch.bool), 0.0)
@@ -318,6 +328,17 @@ def train_one_epoch_qfm(
             # Unbiased MMD^2 (diagonals removed inside)
             loss = mmd2_unbiased(Kxx, Kyy, Kxy)
 
+            # --- Metrics (detach so they don't grow the graph) ---
+            # Off-diagonal stats (full matrix) OR use Kxy only — choose one convention
+            off_mu, off_sd = utility.offdiag_stats(S.detach())  # full matrix version
+            # off_mu, off_sd = utility.offdiag_stats(Kxy_det) # cross-block-only version
+
+            # Δ gap from cross block (positives = diag(Kxy), negatives = off-diag(Kxy))
+            delta = utility.pos_neg_gap_from_cross(Kxy.detach())
+
+            # (Log/store) tau is not used for MMD; report None or "-"
+            tau_used = None
+
         else:
             raise ValueError(f"Unknown loss_type={loss_type}")
 
@@ -328,15 +349,42 @@ def train_one_epoch_qfm(
         total_loss += loss.item()
         losses.append(loss.item())
 
-        batch_ms_list.append(time.perf_counter() - t0)
+        batch_s_list.append(time.perf_counter() - t0)
 
     epoch_time = time.perf_counter() - epoch_t0
-    batch_ms = sum(batch_ms_list) / max(1, len(batch_ms_list))
+    batch_s = sum(batch_s_list) / max(1, len(batch_s_list))
     avg_loss = total_loss / len(dataloader)
 
-    print(f"[QFM] Average batch time: {batch_ms:.4f} s")
+    print(f"[QFM] Average batch time: {batch_s:.4f} s")
     print(f"[QFM] Epoch Time: {epoch_time:.4f} s")
     print(f"[QFM] Epoch Loss: {avg_loss:.4f}")
+
+    metrics = {
+        "loss_type": loss_type,
+        "tau": tau_used,  # float or None
+        "sigma2": sigma2_used,  # float or None
+        "offdiag_mu": off_mu,  # float
+        "offdiag_sd": off_sd,  # float
+        "delta": delta,  # float
+        "s_per_batch": batch_s,  # float
+        "epoch_time_s": epoch_time,  # float
+        "avg_loss": avg_loss,  # float
+    }
+    # one clean printable string
+    metrics["pretty"] = (
+        f"[{loss_type}] "
+        f"loss={avg_loss:.4f}  s/batch={batch_s:.1f}  "
+        f"tau={tau_used if tau_used is not None else '-'}  "
+        f"sigma2={sigma2_used:.3e}"
+        if sigma2_used is not None
+        else f"[{loss_type}] loss={avg_loss:.4f}  s/batch={batch_s:.1f}  "
+    ) + (
+        f"  off_mu={off_mu:.3e}  off_sd={off_sd:.3e}  Δ={delta:.3e}"
+        if (off_mu is not None and off_sd is not None and delta is not None)
+        else ""
+    )
+
+    print(metrics["pretty"])
 
     return avg_loss, losses
 
