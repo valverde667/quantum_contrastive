@@ -72,7 +72,8 @@ def get_dataloaders(
     for_eval: bool = False,
     drop_last: bool | None = None,
     num_workers: int = 4,
-    pin_memory: bool = True,
+    pin_memory: bool | None = None,
+    device=None,
 ):
     """
     Returns a DataLoader for STL-10.
@@ -82,6 +83,10 @@ def get_dataloaders(
     # Decide default drop_last based on mode
     if drop_last is None:
         drop_last = not for_eval
+
+    if pin_memory is None:
+        # Only useful on CUDA; MPS/CPU: set False to avoid the warning
+        pin_memory = device is not None and getattr(device, "type", "") == "cuda"
 
     # Base directory relative to this file
     try:
@@ -282,10 +287,6 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device):
     print(f"Epoch Loss: {avg_loss:.4f}")
 
     return avg_loss, losses
-
-
-import argparse
-import torch
 
 
 def main():
