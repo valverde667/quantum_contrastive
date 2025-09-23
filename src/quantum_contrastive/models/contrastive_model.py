@@ -115,14 +115,20 @@ class ContrastiveModel(nn.Module):
         self.encoder = nn.Sequential(*list(base_model.children())[:-1])  # remove FC
         self.encoder_out_dim = base_model.fc.in_features
 
-        # self.projection_head = ProjectionHead(self.encoder_out_dim, projection_dim)
+        # Projection head selection. Uncomment the section below to select the
+        # desired head. The first is the MLP and the second is the Bottlenecklinear.
+        # The last option is the VQC where the parameters can be set.
+        self.projection_head = ProjectionHead(self.encoder_out_dim, projection_dim)
+        # self.projection_head = BottleneckLinearHead()
 
-        # projection_dim will equal the number of qubits / output dims of the quantum head
-        q_out = 8  # number of qubits to actually use (fast & feasible)
-        self.projection_head = nn.Sequential(
-            QuantumVQCHead(in_dim=self.encoder_out_dim, n_qubits=q_out, n_layers=1),
-            nn.Linear(q_out, projection_dim),  # lift to 128-D if your code expects it
-        )
+        # VQC head parameters. n_observables should be checked with the model
+        # return from class QuantumVQCHead(nn.Module).
+        # q_out = 8  # number of qubits to actually use (fast & feasible)
+        # n_observables = 1 # number of observables being measured
+        # self.projection_head = nn.Sequential(
+        #     QuantumVQCHead(in_dim=self.encoder_out_dim, n_qubits=q_out, n_layers=1),
+        #     nn.Linear(n_observables*q_out, projection_dim),  # lift to 128-D if your code expects it
+        # )
 
     def forward(self, x):
         h = self.encoder(x)  # shape: (B, 512, 1, 1)
