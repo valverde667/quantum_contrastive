@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import random
 import numpy as np
 import time
+import argparse
 
 from quantum_contrastive.models.contrastive_model import ContrastiveModel
 from quantum_contrastive.losses.contrastive import InfoNCELoss
@@ -66,7 +67,22 @@ class ContrastiveTransform:
         return self.base_transform(x), self.base_transform(x)
 
 
-def get_dataloaders(batch_size=128, for_eval=False):
+def get_dataloaders(
+    batch_size: int = 128,
+    for_eval: bool = False,
+    drop_last: bool | None = None,
+    num_workers: int = 4,
+    pin_memory: bool = True,
+):
+    """
+    Returns a DataLoader for STL-10.
+    - for_eval=False: contrastive train loader ((x_i, x_j), y), shuffled, drop_last=True by default.
+    - for_eval=True:  eval/test loader (x, y), not shuffled, drop_last=False by default.
+    """
+    # Decide default drop_last based on mode
+    if drop_last is None:
+        drop_last = not for_eval
+
     # Base directory relative to this file
     try:
         base = os.path.dirname(__file__)
@@ -76,7 +92,7 @@ def get_dataloaders(batch_size=128, for_eval=False):
     data_root = os.path.join(base, "data", "stl10")
     extracted_flag_file = os.path.join(data_root, "stl10_binary", "train_X.bin")
 
-    # Check if data is already downloaded/extracted
+    # Ensure dataset is present
     if not os.path.isfile(extracted_flag_file):
         print(f"STL-10 data not found. Downloading to: {data_root}")
         os.makedirs(data_root, exist_ok=True)
@@ -84,7 +100,7 @@ def get_dataloaders(batch_size=128, for_eval=False):
     else:
         print(f"STL-10 dataset already exists at {data_root}. Skipping download.")
 
-    # Set transform
+    # Transforms
     base_transform = transforms.Compose(
         [
             transforms.RandomResizedCrop(96),
@@ -104,6 +120,7 @@ def get_dataloaders(batch_size=128, for_eval=False):
         dataset = STL10(
             root=data_root, split="test", download=False, transform=eval_transform
         )
+        shuffle = False
     else:
         contrastive_transform = ContrastiveTransform(base_transform)
         dataset = STL10(
@@ -112,9 +129,18 @@ def get_dataloaders(batch_size=128, for_eval=False):
             download=False,
             transform=contrastive_transform,
         )
+        shuffle = True
 
-    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    return dataloader
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        drop_last=drop_last,
+        persistent_workers=(num_workers > 0),
+    )
+    return loader
 
 
 # ---- Functions particularl to training  with a qfm
