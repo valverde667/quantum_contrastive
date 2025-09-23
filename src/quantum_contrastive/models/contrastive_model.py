@@ -70,7 +70,11 @@ class QuantumVQCHead(nn.Module):
                 if n_qubits > 1:
                     qml.CNOT(wires=[n_qubits - 1, 0])
 
-            return [qml.expval(qml.PauliZ(i)) for i in range(n_qubits)]
+            return [
+                qml.expval(op(i))
+                for i in range(n_qubits)
+                for op in [qml.PauliX, qml.PauliY, qml.PauliZ]
+            ]
 
         self.circuit = circuit
 
