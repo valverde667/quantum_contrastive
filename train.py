@@ -345,7 +345,19 @@ def main():
         print("")
 
     # (optional) save losses, checkpoint, etc.
+    torch.save(model.state_dict(), "contrastive_model.pth")
     # torch.save({"model": model.state_dict(), "losses": all_epoch_losses}, "ckpt.pt")
+
+    # Run linear evaluation
+    print("---- Beginning linear probe.")
+    encoder = model.encoder
+    eval_loader = get_dataloaders(for_eval=True)
+    train_linear_probe(encoder, eval_loader, num_classes=10, device=device)
+
+    # Run KNN evaluation
+    print("---- Beginning KNN evaluation.")
+    test_loader = get_dataloaders(for_eval=True)
+    knn_evaluate(encoder, eval_loader, test_loader, device=device, k=5)
 
 
 if __name__ == "__main__":
