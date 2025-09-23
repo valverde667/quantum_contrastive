@@ -284,44 +284,67 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device):
     return avg_loss, losses
 
 
+import argparse
+import torch
+
+
 def main():
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    model = ContrastiveModel().to(device)
-    criterion = InfoNCELoss(temperature=0.5)
-    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
-    loader = get_dataloaders()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--use_feature_map",
+        action="store_true",
+        help="Use quantum feature map (fidelity) instead of a projection head.",
+    )
+    parser.add_argument("--n_qubits", type=int, default=4)
+    parser.add_argument("--n_layers", type=int, default=2)
+    parser.add_argument("--encoding", type=str, default="ry", choices=["ry", "rx"])
+    parser.add_argument(
+        "--entangle", type=str, default="ring", choices=["ring", "linear"]
+    )
+    parser.add_argument("--temperature", type=float, default=0.5)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    args = parser.parse_args()
+
+    # Device: keep QFM on CPU for stability with PennyLane simulators.
+    if args.use_feature_map:
+        device = torch.device("cpu")
+        print("[QFM] Using CPU for encoder + QNode (recommended for stability).")
+        qfm_kwargs = dict(
+            n_qubits=args.n_qubits,
+            n_layers=args.n_layers,
+            encoding=args.encoding,
+            entangle=args.entangle,
+        )
+        model = ContrastiveModel(use_feature_map=True, qfm_kwargs=qfm_kwargs).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        # Ensure your dataloader yields ((x_i, x_j), _) and drop_last=True for 2N batches
+        loader = get_dataloaders(drop_last=True)
+    else:
+        # Classical projection-head path (MPS if available, else CPU)
+        device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        model = ContrastiveModel(projection_dim=128, use_feature_map=False).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        loader = get_dataloaders(drop_last=True)
+        criterion = InfoNCELoss(temperature=args.temperature)
 
     all_epoch_losses = []
     print("---- Beginning contrastive training.")
-    for epoch in range(10):
+    for epoch in range(args.epochs):
         print(f"---- Epoch {epoch}")
-        avg_loss, batch_loss = train_one_epoch(
-            model, loader, optimizer, criterion, device
-        )
+        if args.use_feature_map:
+            avg_loss, batch_loss = train_one_epoch_qfm(
+                model, loader, optimizer, device, tau=args.temperature
+            )
+        else:
+            avg_loss, batch_loss = train_one_epoch(
+                model, loader, optimizer, criterion, device
+            )
         all_epoch_losses.append(avg_loss)
         print("")
 
-    # Save model
-    torch.save(model.state_dict(), "contrastive_model.pth")
-
-    # Plot history of losses
-    plt.scatter([i for i in range(len(all_epoch_losses))], all_epoch_losses)
-    plt.title("Average Loss per Epoch")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.tight_layout()
-    plt.savefig("loss_curve.svg")
-
-    # Run linear evaluation
-    print("---- Beginning linear probe.")
-    encoder = model.encoder
-    eval_loader = get_dataloaders(for_eval=True)
-    train_linear_probe(encoder, eval_loader, num_classes=10, device=device)
-
-    # Run KNN evaluation
-    print("---- Beginning KNN evaluation.")
-    test_loader = get_dataloaders(for_eval=True)
-    knn_evaluate(encoder, eval_loader, test_loader, device=device, k=5)
+    # (optional) save losses, checkpoint, etc.
+    # torch.save({"model": model.state_dict(), "losses": all_epoch_losses}, "ckpt.pt")
 
 
 if __name__ == "__main__":
