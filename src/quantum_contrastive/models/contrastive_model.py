@@ -19,6 +19,17 @@ class ProjectionHead(nn.Module):
         return self.net(x)
 
 
+class BottleneckLinearHead(nn.Module):
+    def __init__(self, in_dim=512, bottleneck_dim=8, out_dim=128):
+        super().__init__()
+        self.pre = nn.Linear(in_dim, bottleneck_dim)  # 512 -> n_q (or 3*n_q)
+        self.lift = nn.Linear(bottleneck_dim, out_dim)  # n_q (or 3*n_q) -> 128
+
+    def forward(self, h):
+        z = self.lift(self.pre(h))
+        return F.normalize(z, dim=-1)
+
+
 class QuantumVQCHead(nn.Module):
     def __init__(
         self,
