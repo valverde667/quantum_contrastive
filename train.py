@@ -181,7 +181,96 @@ def _info_nce_from_similarity(sim: torch.Tensor, tau: float = 0.1) -> torch.Tens
     return F.cross_entropy(logits, targets, reduction="mean")
 
 
-def train_one_epoch_qfm(model, dataloader, optimizer, device, tau: float = 0.1):
+def fidelity_kernel_matrix(states: torch.Tensor) -> torch.Tensor:
+    """
+    states: [N, D] complex, row-normalized |psi>.
+    returns K in [0,1], K_ij = |<psi_i|psi_j>|^2
+    """
+    inner = states @ torch.conj(states).t()  # [N,N] complex
+    K = (inner.abs() ** 2).real
+    return K.clamp_(0.0, 1.0)
+
+
+def rbf_kernel_matrix(X: torch.Tensor, gamma: float | None = None) -> torch.Tensor:
+    """
+    X: [N, D] real. If gamma is None, use median heuristic.
+    returns K_ij = exp(-gamma * ||x_i - x_j||^2)
+    """
+    # pairwise squared distances
+    XX = (X * X).sum(dim=1, keepdim=True)
+    D2 = XX + XX.t() - 2 * (X @ X.t())
+    D2 = D2.clamp_min_(0.0)
+
+    if gamma is None:
+        # median heuristic (exclude diagonal)
+        tri = D2[~torch.eye(D2.size(0), dtype=torch.bool, device=D2.device)]
+        med = torch.median(tri)
+        gamma = (1.0 / (2.0 * med.clamp_min(1e-6))).item()
+    return torch.exp(-gamma * D2)
+
+
+def mmd2_unbiased(
+    Kxx: torch.Tensor, Kyy: torch.Tensor, Kxy: torch.Tensor
+) -> torch.Tensor:
+    """
+    Unbiased MMD^2:
+      E[k(x,x')] + E[k(y,y')] - 2 E[k(x,y)]
+    with diagonals removed from Kxx, Kyy.
+    """
+    n = Kxx.size(0)
+    m = Kyy.size(0)
+    assert Kxx.shape == (n, n) and Kyy.shape == (m, m) and Kxy.shape == (n, m)
+
+    # remove diagonals
+    Kxx_no_diag = Kxx - torch.diag(torch.diag(Kxx))
+    Kyy_no_diag = Kyy - torch.diag(torch.diag(Kyy))
+
+    term_xx = Kxx_no_diag.sum() / (n * (n - 1) + 1e-9)
+    term_yy = Kyy_no_diag.sum() / (m * (m - 1) + 1e-9)
+    term_xy = Kxy.sum() / (n * m + 1e-9)
+
+    return term_xx + term_yy - 2.0 * term_xy
+
+
+def mmd_alignment_loss(
+    states_or_feats_1, states_or_feats_2, kernel="quantum"
+) -> torch.Tensor:
+    """
+    Minimizes MMD^2 between the two view-distributions.
+    kernel: "quantum" => fidelity on complex states; "rbf" => RBF on real vectors
+    """
+    if kernel == "quantum":
+        Kxx = fidelity_kernel_matrix(states_or_feats_1)
+        Kyy = fidelity_kernel_matrix(states_or_feats_2)
+        Kxy = (states_or_feats_1 @ torch.conj(states_or_feats_2).t()).abs() ** 2
+    elif kernel == "rbf":
+        Kxx = rbf_kernel_matrix(states_or_feats_1)
+        Kyy = rbf_kernel_matrix(states_or_feats_2)
+        # cross kernel
+        X, Y = states_or_feats_1, states_or_feats_2
+        XX = (X * X).sum(dim=1, keepdim=True)
+        YY = (Y * Y).sum(dim=1, keepdim=True)
+        D2 = XX + YY.t() - 2 * (X @ Y.t())
+        D2 = D2.clamp_min_(0.0)
+        gamma = None  # median heuristic per batch
+        if gamma is None:
+            med = torch.median(D2.view(-1))
+            gamma = (1.0 / (2.0 * med.clamp_min(1e-6))).item()
+        Kxy = torch.exp(-gamma * D2)
+    else:
+        raise ValueError("kernel must be 'quantum' or 'rbf'.")
+
+    return mmd2_unbiased(Kxx, Kyy, Kxy)
+
+
+def train_one_epoch_qfm(
+    model,
+    dataloader,
+    optimizer,
+    device,
+    tau: float = 0.1,
+    loss_type: str = "infonce",
+):
     """
     Train one epoch using the Quantum Feature Map path.
     Expects dataloader to yield ((x_i, x_j), _) just like your classical loop.
@@ -206,8 +295,31 @@ def train_one_epoch_qfm(model, dataloader, optimizer, device, tau: float = 0.1):
         # 2) Compute pairwise fidelities with the QFM
         S = model.qfm.compute_fidelity_matrix(h)  # [2B, 2B], in [0,1]
 
-        # 3) InfoNCE on similarity matrix
-        loss = _info_nce_from_similarity(S, tau=tau)
+        # 3) Choose loss
+        if loss_type == "infonce":
+            # Standard NT-Xent on similarities
+            N = S.size(0)  # 2B
+            S = S.masked_fill(torch.eye(N, device=S.device, dtype=torch.bool), 0.0)
+            logits = S / tau
+            targets = (torch.arange(N, device=S.device) + N // 2) % N
+            loss = F.cross_entropy(logits, targets)
+
+        elif loss_type == "mmd":
+            # Unbiased MMD^2 between the two view distributions
+            B = S.size(0) // 2
+            Kxx = S[:B, :B].clone()  # view-1 vs view-1
+            Kyy = S[B:, B:].clone()  # view-2 vs view-2
+            Kxy = S[:B, B:].clone()  # view-1 vs view-2 (cross)
+            # (Optional) clamp for numerical safety
+            Kxx.clamp_(0.0, 1.0)
+            Kyy.clamp_(0.0, 1.0)
+            Kxy.clamp_(0.0, 1.0)
+
+            # Unbiased MMD^2 (diagonals removed inside)
+            loss = mmd2_unbiased(Kxx, Kyy, Kxy)
+
+        else:
+            raise ValueError(f"Unknown loss_type={loss_type}")
 
         optimizer.zero_grad()
         loss.backward()
@@ -305,6 +417,9 @@ def main():
     parser.add_argument("--temperature", type=float, default=0.5)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument(
+        "--loss", type=str, default="infonce", choices=["infonce", "mmd"]
+    )
     args = parser.parse_args()
 
     # Device: keep QFM on CPU for stability with PennyLane simulators.
@@ -335,7 +450,12 @@ def main():
         print(f"---- Epoch {epoch}")
         if args.use_feature_map:
             avg_loss, batch_loss = train_one_epoch_qfm(
-                model, loader, optimizer, device, tau=args.temperature
+                model,
+                loader,
+                optimizer,
+                device,
+                tau=args.temperature,
+                loss_type=args.loss,
             )
         else:
             avg_loss, batch_loss = train_one_epoch(
