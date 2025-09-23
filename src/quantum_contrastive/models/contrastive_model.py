@@ -70,6 +70,8 @@ class QuantumVQCHead(nn.Module):
                 if n_qubits > 1:
                     qml.CNOT(wires=[n_qubits - 1, 0])
 
+            # Return the expectation values of the obervables X, Y, and Z. Here,
+            # the return value can be changed to add or subtract other observables.
             return [
                 qml.expval(op(i))
                 for i in range(n_qubits)
