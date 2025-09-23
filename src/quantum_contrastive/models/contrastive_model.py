@@ -55,7 +55,7 @@ class QuantumFeatureMap:
             x = x.repeat(reps)[:need]
         else:
             x = x[:need]
-        return x
+        return x.to(dtype=torch.float32)  # Force fp32 into QNode
 
     def _apply_feature_map(self, angles):
         wires = range(self.n_qubits)
@@ -85,7 +85,8 @@ class QuantumFeatureMap:
         states = self.embed(x_batch)  # [N, 2**nq] complex
         states = states / torch.linalg.vector_norm(states, dim=1, keepdim=True)
         overlaps = states @ states.conj().T  # [N, N] complex
-        return overlaps.abs() ** 2  # [N, N] in [0,1]
+        fids = overlaps.abs() ** 2  # [N, N] in [0,1]
+        return fids.to(torch.float32)  # Force fp32
 
 
 class QuantumVQCHead(nn.Module):
