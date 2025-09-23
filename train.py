@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 from torchvision.datasets import STL10
+import torch.nn.functional as F
 import matplotlib.pyplot as plt
 import random
 import numpy as np
@@ -114,6 +115,87 @@ def get_dataloaders(batch_size=128, for_eval=False):
 
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     return dataloader
+
+
+# ---- Functions particularl to training  with a qfm
+@torch.no_grad()
+def _build_targets(B: int, device):
+    """For a 2N batch (two views), positives are (i, i+N) and (i+N, i)."""
+    assert B % 2 == 0, "Batch must be even: contains two views concatenated."
+    N = B // 2
+    t = torch.arange(B, device=device)
+    t[:N] += N
+    t[N:] -= N
+    return t
+
+
+def _info_nce_from_similarity(sim: torch.Tensor, tau: float = 0.1) -> torch.Tensor:
+    """
+    InfoNCE on a [2N, 2N] similarity matrix where sim[i,j] is higher for positives.
+    We mask the diagonal and use cross-entropy row-wise.
+    """
+    B = sim.shape[0]
+    device = sim.device
+    targets = _build_targets(B, device)
+
+    # Numeric hygiene: clamp to avoid -inf/NaN when using as logits
+    eps = 1e-6
+    sim = sim.clamp(min=eps, max=1 - eps)
+
+    # mask self-similarity
+    sim = sim.clone()
+    sim.fill_diagonal_(-float("inf"))
+
+    logits = sim / tau
+    return F.cross_entropy(logits, targets, reduction="mean")
+
+
+def train_one_epoch_qfm(model, dataloader, optimizer, device, tau: float = 0.1):
+    """
+    Train one epoch using the Quantum Feature Map path.
+    Expects dataloader to yield ((x_i, x_j), _) just like your classical loop.
+    """
+    model.train()
+    total_loss = 0.0
+    losses = []
+
+    epoch_t0 = time.perf_counter()
+    batch_ms_list = []
+
+    for x, _ in dataloader:
+        t0 = time.perf_counter()
+        x_i, x_j = x
+        x_i, x_j = x_i.to(device), x_j.to(device)
+
+        # 1) Encode to features h (no projection head)
+        h_i = model(x_i, return_embedding=True)  # [B, D]
+        h_j = model(x_j, return_embedding=True)  # [B, D]
+        h = torch.cat([h_i, h_j], dim=0)  # [2B, D]
+
+        # 2) Compute pairwise fidelities with the QFM
+        S = model.qfm.compute_fidelity_matrix(h)  # [2B, 2B], in [0,1]
+
+        # 3) InfoNCE on similarity matrix
+        loss = _info_nce_from_similarity(S, tau=tau)
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        losses.append(loss.item())
+
+        batch_ms_list.append(time.perf_counter() - t0)
+
+    epoch_time = time.perf_counter() - epoch_t0
+    batch_ms = sum(batch_ms_list) / max(1, len(batch_ms_list))
+    avg_loss = total_loss / len(dataloader)
+
+    print(f"[QFM] Average batch time: {batch_ms:.4f} s")
+    print(f"[QFM] Epoch Time: {epoch_time:.4f} s")
+    print(f"[QFM] Epoch Loss: {avg_loss:.4f}")
+
+    return avg_loss, losses
 
 
 def train_one_epoch(model, dataloader, optimizer, criterion, device):
