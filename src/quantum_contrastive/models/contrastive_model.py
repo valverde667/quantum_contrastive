@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torchvision.models as models
 from torchvision.models import ResNet18_Weights
 import pennylane as qml
+import numpy as np
 
 
 class ProjectionHead(nn.Module):
@@ -28,6 +29,63 @@ class BottleneckLinearHead(nn.Module):
     def forward(self, h):
         z = self.lift(self.pre(h))
         return F.normalize(z, dim=-1)
+
+
+class QuantumFeatureMap:
+    """Class to hold the creation of a quantum feature map."""
+
+    def __init__(self, n_qubits=4, n_layers=2, encoding="ry", entangle="ring"):
+        self.n_qubits, self.n_layers = n_qubits, n_layers
+        self.encoding, self.entangle = encoding, entangle
+        self.dev = qml.device("default.qubit", wires=n_qubits)
+
+        @qml.qnode(self.dev, interface="torch")
+        def circuit(angles):
+            self._apply_feature_map(angles)
+            return qml.state()
+
+        self._circuit = circuit
+
+    def _to_angles(self, x: torch.Tensor) -> torch.Tensor:
+        # map features to (-pi, pi) for stable rotations
+        x = torch.tanh(x) * np.pi
+        need = self.n_qubits * self.n_layers
+        if x.numel() < need:
+            reps = (need + x.numel() - 1) // x.numel()
+            x = x.repeat(reps)[:need]
+        else:
+            x = x[:need]
+        return x
+
+    def _apply_feature_map(self, angles):
+        wires = range(self.n_qubits)
+        idx = 0
+        for _ in range(self.n_layers):
+            for w in wires:
+                theta = angles[idx]
+                if self.encoding == "ry":
+                    qml.RY(theta, wires=w)
+                elif self.encoding == "rx":
+                    qml.RX(theta, wires=w)
+                else:
+                    raise ValueError(f"Unknown encoding: {self.encoding}")
+                idx += 1
+            if self.entangle == "ring":
+                for w in wires:
+                    qml.CZ(wires=[w, (w + 1) % self.n_qubits])
+            elif self.entangle == "linear":
+                for w in range(self.n_qubits - 1):
+                    qml.CZ(wires=[w, w + 1])
+
+    def embed(self, x_batch: torch.Tensor) -> torch.Tensor:
+        """Returns a [B, 2**n_qubits] complex tensor of statevectors."""
+        return torch.stack([self._circuit(self._to_angles(x)) for x in x_batch])
+
+    def compute_fidelity_matrix(self, x_batch):
+        states = self.embed(x_batch)  # [N, 2**nq] complex
+        states = states / torch.linalg.vector_norm(states, dim=1, keepdim=True)
+        overlaps = states @ states.conj().T  # [N, N] complex
+        return overlaps.abs() ** 2  # [N, N] in [0,1]
 
 
 class QuantumVQCHead(nn.Module):
@@ -125,30 +183,46 @@ class QuantumVQCHead(nn.Module):
 
 
 class ContrastiveModel(nn.Module):
-    def __init__(self, projection_dim=128):
+    def __init__(self, projection_dim=128, use_feature_map=False, qfm_kwargs=None):
         super().__init__()
         # Load pretrained ResNet18 and remove final classification layer
         base_model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
         self.encoder = nn.Sequential(*list(base_model.children())[:-1])  # remove FC
         self.encoder_out_dim = base_model.fc.in_features
+        self.use_feature_map = use_feature_map
 
-        # Projection head selection. Uncomment the section below to select the
-        # desired head. The first is the MLP and the second is the Bottlenecklinear.
-        # The last option is the VQC where the parameters can be set.
-        self.projection_head = ProjectionHead(self.encoder_out_dim, projection_dim)
-        # self.projection_head = BottleneckLinearHead()
+        # Create switch between using quantum feature map (skip head) or a head projection
+        if use_feature_map:
+            self.qfm = QuantumFeatureMap(**(qfm_kwargs or {}))
+            self.projection_head = None
+        else:
+            # Projection head selection. Uncomment the section below to select the
+            # desired head. The first is the MLP and the second is the Bottlenecklinear.
+            # The last option is the VQC where the parameters can be set.
+            self.projection_head = ProjectionHead(self.encoder_out_dim, projection_dim)
+            # self.projection_head = BottleneckLinearHead()
 
-        # VQC head parameters. n_observables should be checked with the model
-        # return from class QuantumVQCHead(nn.Module).
-        # q_out = 8  # number of qubits to actually use (fast & feasible)
-        # n_observables = 1 # number of observables being measured
-        # self.projection_head = nn.Sequential(
-        #     QuantumVQCHead(in_dim=self.encoder_out_dim, n_qubits=q_out, n_layers=1),
-        #     nn.Linear(n_observables*q_out, projection_dim),  # lift to 128-D if your code expects it
-        # )
+            # VQC head parameters. n_observables should be checked with the model
+            # return from class QuantumVQCHead(nn.Module).
+            # q_out = 8  # number of qubits to actually use (fast & feasible)
+            # n_observables = 1 # number of observables being measured
+            # self.projection_head = nn.Sequential(
+            #     QuantumVQCHead(in_dim=self.encoder_out_dim, n_qubits=q_out, n_layers=1),
+            #     nn.Linear(n_observables*q_out, projection_dim),  # lift to 128-D if your code expects it
+            # )
 
-    def forward(self, x):
+    def forward(self, x, return_embedding=False):
         h = self.encoder(x)  # shape: (B, 512, 1, 1)
         h = torch.flatten(h, 1)  # shape: (B, 512)
-        z = self.projection_head(h)  # shape: (B, 128)
-        return h, z  # return both for later comparison
+
+        # Based on selection, use a feature map or projeciton head.
+        if self.use_feature_map:
+            if return_embedding:
+                return h
+            else:
+                raise RuntimeError(
+                    "Quantum Feature Map requires return_embedding=True."
+                )
+        else:
+            z = self.projection_head(h)  # shape: (B, 128)
+            return h, z  # return both for later comparison
