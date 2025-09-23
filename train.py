@@ -6,6 +6,7 @@ from torchvision.datasets import STL10
 import matplotlib.pyplot as plt
 import random
 import numpy as np
+import time
 
 from quantum_contrastive.models.contrastive_model import ContrastiveModel
 from quantum_contrastive.losses.contrastive import InfoNCELoss
@@ -14,6 +15,27 @@ from quantum_contrastive.eval.knn_eval import knn_evaluate
 from quantum_contrastive.visual.plot_format import set_plot_style
 
 set_plot_style()
+
+
+# Helper function for synching execution times.
+def dev_synchronize(tensor_or_device=None):
+    """Synchronize if using CUDA/MPS so timers are accurate."""
+    try:
+        dev_type = None
+        if tensor_or_device is None:
+            return
+        if isinstance(tensor_or_device, torch.device):
+            dev_type = tensor_or_device.type
+        elif torch.is_tensor(tensor_or_device):
+            dev_type = tensor_or_device.device.type
+
+        if dev_type == "cuda":
+            torch.cuda.synchronize()
+        elif dev_type == "mps":
+            torch.mps.synchronize()
+    except Exception:
+        # Safe no-op if not available
+        pass
 
 
 # Set random seed
@@ -98,21 +120,56 @@ def train_one_epoch(model, dataloader, optimizer, criterion, device):
     model.train()
     total_loss = 0.0
     losses = []
+
+    # Setup variables for collecting execution time metrics.
+    epoch_t0 = time.perf_counter()
+    batch_ms_list = []
     for x, _ in dataloader:
+        t0 = time.perf_counter()
         x_i, x_j = x
         x_i, x_j = x_i.to(device), x_j.to(device)
 
         _, z_i = model(x_i)
         _, z_j = model(x_j)
 
+        # # === DIAGNOSTIC: check variance of z ===
+        # # We'll check L2 norm and per-dimension variance
+        # z_all = torch.cat([z_i, z_j], dim=0)  # shape [2B, D]
+        # z_var = z_all.var(dim=0)              # variance per feature dim
+        # z_std = z_all.std()                   # overall std across all z
+        # z_mean_norm = z_all.norm(dim=1).mean()  # avg L2 norm per sample
+        # print(f"z std: {z_std.item():.4f}, mean L2 norm: {z_mean_norm.item():.4f}")
+        # # Optionally log these to WandB or file
+
         loss = criterion(z_i, z_j)
         optimizer.zero_grad()
         loss.backward()
+
+        # === VQC Gradient Diagnostics ===
+        # print("")``
+        # print("*****DEBUG****")
+        # for name, param in model.named_parameters():
+        #     if name.startswith("projection_head.0"):
+        #         if param.grad is not None:
+        #             print(f"{name}: grad norm = {param.grad.norm().item():.6f}")
+        #         else:
+        #             print(f"{name}: grad is None")
+
+        # print("")
         optimizer.step()
 
         total_loss += loss.item()
         losses.append(loss.item())
 
+        batch_ms_list.append((time.perf_counter() - t0))
+
+    epoch_time = time.perf_counter() - epoch_t0
+    imgs_per_sec = len(dataloader) / epoch_time
+
+    batch_ms = sum(batch_ms_list) / max(1, len(batch_ms_list))
+
+    print(f"Average batch time: {batch_ms:.4f} s")
+    print(f"Epoch Time: {epoch_time:.4f} s")
     avg_loss = total_loss / len(dataloader)
     print(f"Epoch Loss: {avg_loss:.4f}")
 
@@ -129,10 +186,12 @@ def main():
     all_epoch_losses = []
     print("---- Beginning contrastive training.")
     for epoch in range(10):
+        print(f"---- Epoch {epoch}")
         avg_loss, batch_loss = train_one_epoch(
             model, loader, optimizer, criterion, device
         )
         all_epoch_losses.append(avg_loss)
+        print("")
 
     # Save model
     torch.save(model.state_dict(), "contrastive_model.pth")
@@ -144,7 +203,6 @@ def main():
     plt.ylabel("Loss")
     plt.tight_layout()
     plt.savefig("loss_curve.svg")
-    plt.show()
 
     # Run linear evaluation
     print("---- Beginning linear probe.")
