@@ -264,6 +264,17 @@ def mmd_alignment_loss(
     return mmd2_unbiased(Kxx, Kyy, Kxy)
 
 
+def fs_rbf_from_fidelity(K_fid: torch.Tensor):
+    # K_fid in [0,1] (fidelity)
+    K_fid = K_fid.clamp_(0.0, 1.0)
+    d_fs = torch.acos(K_fid.sqrt())  # Fubini–Study distance
+    N = d_fs.size(0)
+    off = d_fs[~torch.eye(N, dtype=torch.bool, device=d_fs.device)]
+    sigma2 = (torch.median(off) ** 2).clamp_min(1e-6)
+    K = torch.exp(-(d_fs**2) / sigma2)
+    return K, sigma2.item()
+
+
 def train_one_epoch_qfm(
     model,
     dataloader,
@@ -271,6 +282,7 @@ def train_one_epoch_qfm(
     device,
     tau: float = 0.1,
     loss_type: str = "infonce",
+    kernel: str = "fidelity",
 ):
     """
     Train one epoch using the Quantum Feature Map path.
@@ -298,6 +310,14 @@ def train_one_epoch_qfm(
 
         # 2) Compute pairwise fidelities with the QFM
         S = model.qfm.compute_fidelity_matrix(h).clamp(0.0, 1.0)  # [2B, 2B], in [0,1]
+
+        # 2a) choose kernel (fidelity or FS-RBF)
+        if kernel == "fsrbf":
+            K, sigma2_used = fs_rbf_from_fidelity(S)  # bandwidth logged
+        elif kernel == "fidelity":
+            K = S
+        else:
+            raise ValueError(f"Unknown kernel='{kernel}'")
 
         # 3) Choose loss
         if loss_type == "infonce":
@@ -468,6 +488,9 @@ def main():
     parser.add_argument(
         "--loss", type=str, default="infonce", choices=["infonce", "mmd"]
     )
+    parser.add_argument(
+        "--kernel", type=str, default="fidelity", choices=["fidelity", "fsrbf"]
+    )
     args = parser.parse_args()
 
     # Device: keep QFM on CPU for stability with PennyLane simulators.
@@ -504,6 +527,7 @@ def main():
                 device,
                 tau=args.temperature,
                 loss_type=args.loss,
+                kernel=args.kernel,
             )
         else:
             avg_loss, batch_loss = train_one_epoch(
