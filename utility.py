@@ -1,7 +1,5 @@
 import torch
 
-import torch
-
 
 def offdiag_stats(K: torch.Tensor):
     """
