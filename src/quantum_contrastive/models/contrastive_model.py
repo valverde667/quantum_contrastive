@@ -39,7 +39,7 @@ class QuantumFeatureMap:
         self.encoding, self.entangle = encoding, entangle
         self.dev = qml.device("default.qubit", wires=n_qubits)
 
-        @qml.qnode(self.dev, interface="torch")
+        @qml.qnode(self.dev, interface="torch", diff_method="backprop")
         def circuit(angles):
             self._apply_feature_map(angles)
             return qml.state()
@@ -57,25 +57,57 @@ class QuantumFeatureMap:
             x = x[:need]
         return x.to(dtype=torch.float32)  # Force fp32 into QNode
 
-    def _apply_feature_map(self, angles):
-        wires = range(self.n_qubits)
-        idx = 0
-        for _ in range(self.n_layers):
-            for w in wires:
-                theta = angles[idx]
-                if self.encoding == "ry":
-                    qml.RY(theta, wires=w)
-                elif self.encoding == "rx":
-                    qml.RX(theta, wires=w)
+    def _apply_feature_map(self, angles: torch.Tensor):
+        """
+        angles: shape [n_layers * n_qubits] or [n_qubits].
+        - If [n_layers*n_qubits], we layer-specifically reupload angles[layer, q].
+        - If [n_qubits], we reuse the same angles at each layer (classic reuploading).
+        """
+        nq, L = self.n_qubits, self.n_layers
+
+        # Normalize angles shape
+        if angles.numel() == nq * L:
+            A = angles.view(L, nq)
+        elif angles.numel() == nq:
+            A = angles.unsqueeze(0).expand(L, nq)  # same angles each layer
+        else:
+            raise ValueError(
+                f"angles has {angles.numel()} elems; expected {nq} or {nq*L}"
+            )
+
+        for l in range(L):
+            # --- data reuploading: encode per-qubit angles each layer ---
+            for q in range(nq):
+                # (Optional) spread info across axes; fall back to your encoding flag
+                if getattr(self, "encoding", "ry").lower() == "rx":
+                    qml.RX(A[l, q], wires=q)
+                elif getattr(self, "encoding", "ry").lower() == "ry":
+                    qml.RY(A[l, q], wires=q)
                 else:
-                    raise ValueError(f"Unknown encoding: {self.encoding}")
-                idx += 1
-            if self.entangle == "ring":
-                for w in wires:
-                    qml.CZ(wires=[w, (w + 1) % self.n_qubits])
-            elif self.entangle == "linear":
-                for w in range(self.n_qubits - 1):
-                    qml.CZ(wires=[w, w + 1])
+                    # a slightly richer default if unknown: phase+x
+                    qml.RZ(A[l, q], wires=q)
+                    qml.RX(A[l, q], wires=q)
+
+            # --- entanglement / interactions ---
+            ent = getattr(self, "entangle", "ring").lower()
+            if ent == "ring":
+                # CZ ring
+                for q in range(nq):
+                    qml.CZ(wires=[q, (q + 1) % nq])
+                # (Optional) add lightweight ZZ-style interactions for more expressivity:
+                # for q in range(nq):
+                #     q_next = (q + 1) % nq
+                #     qml.IsingZZ(A[l, q] * A[l, q_next], wires=[q, q_next])
+
+            elif ent == "linear":
+                for q in range(nq - 1):
+                    qml.CZ(wires=[q, q + 1])
+                # (Optional) extra: qml.IsingZZ(A[l, q] * A[l, q+1], wires=[q, q+1])
+
+            else:
+                # default to a simple ring if unknown
+                for q in range(nq):
+                    qml.CZ(wires=[q, (q + 1) % nq])
 
     def embed(self, x_batch: torch.Tensor) -> torch.Tensor:
         """Returns a [B, 2**n_qubits] complex tensor of statevectors."""
@@ -187,7 +219,7 @@ class ContrastiveModel(nn.Module):
     def __init__(self, projection_dim=128, use_feature_map=False, qfm_kwargs=None):
         super().__init__()
         # Load pretrained ResNet18 and remove final classification layer
-        base_model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
+        base_model = models.resnet18(weights=None)
         self.encoder = nn.Sequential(*list(base_model.children())[:-1])  # remove FC
         self.encoder_out_dim = base_model.fc.in_features
         self.use_feature_map = use_feature_map
