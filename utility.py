@@ -36,6 +36,18 @@ def pos_neg_gap_from_full(K: torch.Tensor):
     return pos_mean - neg_mean
 
 
+def pos_neg_gap_from_cross(Kxy: torch.Tensor) -> float:
+    """
+    For two-view kernels: Kxy is [B, B] (view1 vs view2).
+    Positives = diag(Kxy); negatives = off-diagonals of Kxy.
+    Returns Δ = mean(pos) - mean(neg).
+    """
+    B = Kxy.size(0)
+    pos = torch.diag(Kxy)
+    neg = Kxy[~torch.eye(B, dtype=torch.bool, device=Kxy.device)]
+    return (pos.mean() - neg.mean()).item()
+
+
 def fs_rbf_from_fidelity(K_fid: torch.Tensor):
     """
     Convert fidelity kernel K_fid (in [0,1]) to an RBF kernel on
