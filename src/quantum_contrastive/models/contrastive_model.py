@@ -239,7 +239,7 @@ class ContrastiveModel(nn.Module):
             # VQC head parameters. n_observables should be checked with the model
             # return from class QuantumVQCHead(nn.Module).
             # q_out = 8  # number of qubits to actually use (fast & feasible)
-            # n_observables = 1 # number of observables being measured
+            # n_observables = 3 # number of observables being measured
             # self.projection_head = nn.Sequential(
             #     QuantumVQCHead(in_dim=self.encoder_out_dim, n_qubits=q_out, n_layers=1),
             #     nn.Linear(n_observables*q_out, projection_dim),  # lift to 128-D if your code expects it
