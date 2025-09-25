@@ -219,7 +219,8 @@ class ContrastiveModel(nn.Module):
     def __init__(self, projection_dim=128, use_feature_map=False, qfm_kwargs=None):
         super().__init__()
         # Load pretrained ResNet18 and remove final classification layer
-        base_model = models.resnet18(weights=None)
+        # Use weights = ResNet18_Weights.DEFAULT or NONE.
+        base_model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
         self.encoder = nn.Sequential(*list(base_model.children())[:-1])  # remove FC
         self.encoder_out_dim = base_model.fc.in_features
         self.use_feature_map = use_feature_map
