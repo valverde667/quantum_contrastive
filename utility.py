@@ -63,3 +63,47 @@ def fs_rbf_from_fidelity(K_fid: torch.Tensor):
     sigma2 = (torch.median(d) ** 2).clamp_min(1e-6)
     K_rbf = torch.exp(-(fs**2) / sigma2)
     return K_rbf, sigma2.item()
+
+
+def linear_CKA(X: torch.Tensor, Y: torch.Tensor) -> float:
+    """
+    Linear CKA between two sets of features.
+    Args:
+        X: [N, D] tensor (e.g., from model 1)
+        Y: [N, D] tensor (e.g., from model 2)
+    Returns:
+        scalar CKA value (float)
+    """
+    X = X - X.mean(0, keepdim=True)
+    Y = Y - Y.mean(0, keepdim=True)
+
+    dot_product_similarity = (X.T @ Y).norm("fro") ** 2
+    normalization = (X.T @ X).norm("fro") * (Y.T @ Y).norm("fro")
+
+    return (dot_product_similarity / normalization).item()
+
+
+def kernel_CKA(K: torch.Tensor, L: torch.Tensor) -> float:
+    """
+    Kernel CKA between two kernel matrices K and L.
+    Assumes K and L are [N, N] symmetric similarity matrices (e.g., cosine kernel).
+    Args:
+        K: [N, N] kernel matrix (e.g., cosine similarity of features from model 1)
+        L: [N, N] kernel matrix (e.g., cosine similarity of features from model 2)
+    Returns:
+        scalar CKA value (float)
+    """
+
+    def center(K):
+        n = K.size(0)
+        I = torch.eye(n, device=K.device)
+        one_n = torch.ones((n, n), device=K.device) / n
+        return K - one_n @ K - K @ one_n + one_n @ K @ one_n
+
+    K_c = center(K)
+    L_c = center(L)
+
+    numerator = (K_c * L_c).sum()
+    denom = torch.sqrt((K_c * K_c).sum() * (L_c * L_c).sum())
+
+    return (numerator / denom).item()
