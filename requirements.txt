@@ -48,7 +48,6 @@ pyparsing==3.2.3
 python-dateutil==2.9.0.post0
 pytz==2025.2
 PyYAML==6.0.2
--e git+ssh://git@github.com/valverde667/quantum_contrastive.git@bc5814e99d3f10bdd9bb43b1c0f33ac72a1afe7f#egg=quantum_contrastive
 requests==2.32.5
 rustworkx==0.17.1
 scikit-learn==1.7.0
